@@ -1,0 +1,541 @@
+// ==UserScript==
+// @name         Torn Chain Watch Assistant
+// @namespace    https://greasyfork.org/users/TheGingerbeardman
+// @version      2.0
+// @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
+// @author       Gingerbeardman
+// @match        https://www.torn.com/*
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @credit       tos https://greasyfork.org/en/scripts/370905-chain-warn-v2
+// @credit       Omanpx [1906686], Titanic_ [2968477] https://greasyfork.org/en/scripts/511611-faction-target-finder
+// @license      GPLv3
+// @downloadURL https://update.greasyfork.org/scripts/554062/Torn%20Chain%20Watch%20Assistant.user.js
+// @updateURL https://update.greasyfork.org/scripts/554062/Torn%20Chain%20Watch%20Assistant.meta.js
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEYS = {
+    enabled: 'chain_watch_enabled',
+    apiKey: 'chain_watch_api_key',
+    thresholds: 'chain_watch_thresholds',
+  };
+
+  const state = {
+    enabled: localStorage.getItem(STORAGE_KEYS.enabled) === 'true',
+    apiKey: localStorage.getItem(STORAGE_KEYS.apiKey) || '',
+    thresholds: JSON.parse(localStorage.getItem(STORAGE_KEYS.thresholds) || '{}'),
+    overlay: null,
+    audioAlarm: null,
+    interval: null,
+    overlayDismissed: false,  // <— new flag
+  };
+
+  const TARGET_FALLBACK_FACTIONS = [1111, 2222, 3333];
+  const MAX_LEVEL = 100;
+  const API_DELAY = 2000;
+
+  GM_addStyle(`
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap');
+
+    .cw-button {
+      margin-left: 10px;
+      padding: 6px 14px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #00ccff;
+      border: 1px solid #00ccff;
+      border-radius: 6px;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      text-transform: uppercase;
+      transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: 0 0 4px #00ccff55;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000;
+    }
+
+    .cw-button:hover {
+      background: #00ccff;
+      color: #111;
+      box-shadow: 0 0 10px #00ccffaa;
+    }
+
+    .cw-popup {
+      position: fixed;
+      top: 100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #111;
+      border: 1px solid #444;
+      padding: 20px;
+      color: #eee;
+      z-index: 10000;
+      width: 320px;
+      border-radius: 10px;
+      font-family: Arial, sans-serif;
+      box-shadow: 0 0 20px #000;
+    }
+
+    .cw-popup input[type="text"] {
+      background: #222;
+      color: #fff;
+      border: 1px solid #555;
+      border-radius: 4px;
+      font-size: 14px;
+      padding: 6px;
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+    }
+
+    .cw-popup .threshold-group {
+      margin-bottom: 14px;
+    }
+
+    .cw-popup .threshold-group label {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+
+    .cw-popup .threshold-group .mins-secs {
+      display: flex;
+      gap: 8px;
+    }
+
+    .cw-popup .threshold-group .mins-secs input {
+      width: 100px;
+    }
+
+    .cw-popup button.save-changes {
+      width: 100%;
+      padding: 8px;
+      margin-top: 10px;
+      background: #28a745;
+      border: none;
+      color: #fff;
+      font-weight: bold;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .cw-popup button.save-changes:hover {
+      background: #218838;
+    }
+
+    .cw-close {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      color: #ccc;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .cw-close:hover {
+      color: #f66;
+    }
+
+    .cw-toggle {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      border: none;
+      border-radius: 999px;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.3s ease;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+    }
+
+    .cw-toggle.on {
+      background: #28a745;
+    }
+
+    .cw-toggle.off {
+      background: #dc3545;
+    }
+
+    .cw-title-timer {
+      font-size: 22px;
+      font-weight: bold;
+      margin-left: 10px;
+      cursor: pointer;
+      font-family: 'Orbitron', sans-serif;
+      color: #00ccff;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000;
+    }
+
+    .cw-flash {
+      animation: flash 1s infinite;
+    }
+
+    @keyframes flash {
+      0% { opacity: 1; }
+      50% { opacity: 0.4; }
+      100% { opacity: 1; }
+    }
+
+    .cw-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(255,0,0,0.5);
+      z-index: 10001;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .cw-overlay-timer {
+      font-size: 100px;
+      font-weight: bold;
+      color: red;
+      font-family: 'Orbitron', sans-serif;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000;
+    }
+
+    .cw-overlay button {
+      margin-top: 20px;
+      font-size: 24px;
+      padding: 10px 20px;
+      background: black;
+      color: white;
+      border: 2px solid red;
+      border-radius: 10px;
+      cursor: pointer;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 700;
+    }
+  `);
+
+  const mmssToSec = str => {
+    const [m, s] = str.split(':').map(n => parseInt(n.trim()));
+    return isNaN(m) || isNaN(s) ? null : m * 60 + s;
+  };
+  const secToMMSS = sec => `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, '0')}`;
+
+  const getDOMTimer = () => {
+    const el = document.querySelector('.bar-timeleft___B9RGV');
+    if (!el) return null;
+    const [m, s] = el.innerText.split(':').map(Number);
+    return isNaN(m) || isNaN(s) ? null : m * 60 + s;
+  };
+
+  const getAPITimer = () => {
+    return new Promise((resolve, reject) => {
+      if (!state.apiKey) return reject();
+      const url = `https://api.torn.com/v2/faction/chain?key=${state.apiKey}`;
+      let timeout = setTimeout(() => reject(), API_DELAY);
+      GM_xmlhttpRequest({
+        method: "GET",
+        url,
+        onload: res => {
+          clearTimeout(timeout);
+          try {
+            const json = JSON.parse(res.responseText);
+            json.timeout !== undefined ? resolve(json.timeout) : reject();
+          } catch { reject(); }
+        },
+        onerror: () => reject()
+      });
+    });
+  };
+
+  const openTargetPage = (id) => {
+    const url = `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
+    hideOverlay();
+    window.open(url, '_blank');
+  };
+
+  const findTargetFromList = () => {
+    return new Promise((resolve) => {
+      const url = `https://api.torn.com/v2/user/list?cat=Targets&key=${state.apiKey}`;
+      GM_xmlhttpRequest({
+        method: "GET",
+        url,
+        onload(res) {
+          try {
+            const data = JSON.parse(res.responseText);
+            const live = data.list?.filter(u => u.status?.state === "Okay" && u.level <= MAX_LEVEL);
+            const selected = live[Math.floor(Math.random() * live.length)];
+            resolve(selected?.user_id || null);
+          } catch { resolve(null); }
+        },
+        onerror: () => resolve(null)
+      });
+    });
+  };
+
+  const findTargetFromFactions = (index = 0) => {
+    return new Promise((resolve) => {
+      if (index >= TARGET_FALLBACK_FACTIONS.length) {
+        const randomId = Math.floor(Math.random() * (3900000 - 3600000) + 3600000);
+        return resolve(randomId);
+      }
+      const fid = TARGET_FALLBACK_FACTIONS[index];
+      const url = `https://api.torn.com/faction/${fid}?selections=basic&key=${state.apiKey}`;
+      GM_xmlhttpRequest({
+        method: "GET",
+        url,
+        onload(res) {
+          try {
+            const data = JSON.parse(res.responseText);
+            const members = Object.values(data.members || {});
+            const live = members.filter(m => m.status?.state === "Okay" && m.level <= MAX_LEVEL);
+            const chosen = live[Math.floor(Math.random() * live.length)];
+            if (chosen) resolve(chosen.user_id);
+            else findTargetFromFactions(index + 1).then(resolve);
+          } catch {
+            findTargetFromFactions(index + 1).then(resolve);
+          }
+        },
+        onerror: () => findTargetFromFactions(index + 1).then(resolve)
+      });
+    });
+  };
+
+  const findTarget = async () => {
+    const idFromList = await findTargetFromList();
+    if (idFromList) return openTargetPage(idFromList);
+    const idFromFacs = await findTargetFromFactions();
+    if (idFromFacs) return openTargetPage(idFromFacs);
+  };
+
+  const showOverlay = (seconds) => {
+    if (state.overlay) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'cw-overlay';
+    overlay.innerHTML = `
+      <div class="cw-overlay-timer">${secToMMSS(seconds)}</div>
+      <button id="cw-save-chain-btn">Save the Chain!</button>
+      <div style="margin-top:8px; color:#fff; font-size:16px;">(press ESC to dismiss)</div>
+    `;
+    overlay.querySelector('#cw-save-chain-btn').onclick = () => {
+      hideOverlay();
+      findTarget();
+    };
+    document.body.appendChild(overlay);
+    state.overlay = overlay;
+
+    const escHandler = e => {
+      if (e.key === 'Escape') {
+        hideOverlay();
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+
+    overlay._escHandler = escHandler;
+  };
+
+  const hideOverlay = () => {
+    if (state.overlay) {
+      document.removeEventListener('keydown', state.overlay._escHandler);
+      state.overlay.remove();
+      state.overlay = null;
+    }
+    if (state.audioAlarm) {
+      clearInterval(state.audioAlarm);
+      state.audioAlarm = null;
+    }
+    state.overlayDismissed = true;  // <— mark as dismissed
+  };
+
+  const showSettingsPanel = () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'cw-popup';
+
+    const upM = state.thresholds.upper != null ? Math.floor(state.thresholds.upper / 60) : '';
+    const upS = state.thresholds.upper != null ? (state.thresholds.upper % 60) : '';
+    const midM = state.thresholds.middle != null ? Math.floor(state.thresholds.middle / 60) : '';
+    const midS = state.thresholds.middle != null ? (state.thresholds.middle % 60) : '';
+    const lowM = state.thresholds.lower != null ? Math.floor(state.thresholds.lower / 60) : '';
+    const lowS = state.thresholds.lower != null ? (state.thresholds.lower % 60) : '';
+
+    wrap.innerHTML = `
+      <button id="cw-toggle" class="cw-toggle ${state.enabled ? 'on' : 'off'}">
+        ${state.enabled ? 'Chain Watch ON' : 'Chain Watch OFF'}
+      </button>
+      <input id="cw-apikey" type="text" placeholder="API Key (limited)" value="${state.apiKey}" />
+
+      <div class="threshold-group">
+        <label>Upper Threshold</label>
+        <div class="mins-secs">
+          <input id="cw-upper-mins" type="text" placeholder="Minutes" value="${upM}" />
+          <input id="cw-upper-secs" type="text" placeholder="Seconds" value="${upS}" />
+        </div>
+      </div>
+
+      <div class="threshold-group">
+        <label>Middle Threshold</label>
+        <div class="mins-secs">
+          <input id="cw-middle-mins" type="text" placeholder="Minutes" value="${midM}" />
+          <input id="cw-middle-secs" type="text" placeholder="Seconds" value="${midS}" />
+        </div>
+      </div>
+
+      <div class="threshold-group">
+        <label>Lower Threshold</label>
+        <div class="mins-secs">
+          <input id="cw-lower-mins" type="text" placeholder="Minutes" value="${lowM}" />
+          <input id="cw-lower-secs" type="text" placeholder="Seconds" value="${lowS}" />
+        </div>
+      </div>
+
+      <button id="cw-save" class="save-changes">Save Changes</button>
+      <div class="cw-close">✖</div>
+    `;
+    wrap.querySelector('#cw-toggle').onclick = e => {
+      state.enabled = !state.enabled;
+      localStorage.setItem(STORAGE_KEYS.enabled, state.enabled);
+      e.target.className = 'cw-toggle ' + (state.enabled ? 'on' : 'off');
+      e.target.textContent = state.enabled ? 'Chain Watch ON' : 'Chain Watch OFF';
+
+      if (state.enabled) {
+        injectTimerUI();
+        if (!state.interval) {
+          state.interval = setInterval(runLoop, 1000);
+        }
+      } else {
+        const existing = document.getElementById('cw-duplicate-timer');
+        if (existing) existing.remove();
+        if (state.interval) {
+          clearInterval(state.interval);
+          state.interval = null;
+        }
+        hideOverlay();
+      }
+    };
+    wrap.querySelector('#cw-save').onclick = () => {
+      const api = wrap.querySelector('#cw-apikey').value.trim();
+      const upMins = parseInt(wrap.querySelector('#cw-upper-mins').value, 10);
+      const upSecs = parseInt(wrap.querySelector('#cw-upper-secs').value, 10);
+      const midMins = parseInt(wrap.querySelector('#cw-middle-mins').value, 10);
+      const midSecs = parseInt(wrap.querySelector('#cw-middle-secs').value, 10);
+      const lowMins = parseInt(wrap.querySelector('#cw-lower-mins').value, 10);
+      const lowSecs = parseInt(wrap.querySelector('#cw-lower-secs').value, 10);
+
+      state.apiKey = api;
+      localStorage.setItem(STORAGE_KEYS.apiKey, api);
+
+      const thresholds = {};
+      if (!isNaN(upMins) && !isNaN(upSecs)) thresholds.upper = upMins * 60 + upSecs;
+      if (!isNaN(midMins) && !isNaN(midSecs)) thresholds.middle = midMins * 60 + midSecs;
+      if (!isNaN(lowMins) && !isNaN(lowSecs)) thresholds.lower = lowMins * 60 + lowSecs;
+
+      state.thresholds = thresholds;
+      localStorage.setItem(STORAGE_KEYS.thresholds, JSON.stringify(thresholds));
+
+      // Automatically enable
+      state.enabled = true;
+      localStorage.setItem(STORAGE_KEYS.enabled, 'true');
+
+      wrap.remove();
+      injectTimerUI();
+      if (!state.interval) {
+        state.interval = setInterval(runLoop, 1000);
+      }
+    };
+    wrap.querySelector('.cw-close').onclick = () => wrap.remove();
+    document.body.appendChild(wrap);
+  };
+
+  const injectTimerUI = () => {
+    const h4 = document.querySelector('.content-title h4');
+    if (!h4 || document.getElementById('cw-duplicate-timer')) return;
+
+    const timerEl = document.createElement('span');
+    timerEl.className = 'cw-title-timer';
+    timerEl.id = 'cw-duplicate-timer';
+    timerEl.title = 'Click to Save Chain!';
+    timerEl.onclick = findTarget;
+    h4.parentElement.appendChild(timerEl);
+  };
+
+  const injectUIIfFactionPage = () => {
+    if (!location.href.includes('/factions.php')) return;
+    const h4 = document.querySelector('.content-title h4');
+    if (!h4 || document.querySelector('.cw-button')) return;
+    const btn = document.createElement('button');
+    btn.className = 'cw-button';
+    btn.textContent = '🔗 Chain Watch 🔗';
+    btn.onclick = showSettingsPanel;
+    h4.parentElement.appendChild(btn);
+  };
+
+  const runLoop = async () => {
+    if (!state.enabled) return;
+    let sec = null;
+    try { sec = await getAPITimer(); } catch { sec = getDOMTimer(); }
+    if (!sec) return;
+
+    const el = document.getElementById('cw-duplicate-timer');
+    if (el) el.textContent = secToMMSS(sec);
+
+    const originalTitle = document.title.replace(/^\d+:\d+\s—\s*/, '');
+    document.title = `${secToMMSS(sec)} — ${originalTitle}`;
+
+    const domTimerEl = document.querySelector('.bar-timeleft___B9RGV');
+
+    // -- Reset dismissal when timer goes above threshold
+    if (state.thresholds.lower != null && sec > state.thresholds.lower) {
+      state.overlayDismissed = false;
+    }
+
+    if (state.thresholds.lower != null && sec <= state.thresholds.lower && !state.overlayDismissed) {
+      showOverlay(sec);
+    } else {
+      hideOverlay();
+    }
+
+    if (state.thresholds.middle && sec <= state.thresholds.middle) {
+      el?.classList.add('cw-flash');
+      domTimerEl?.classList.add('cw-flash');
+    } else {
+      el?.classList.remove('cw-flash');
+      domTimerEl?.classList.remove('cw-flash');
+    }
+
+    if (state.thresholds.upper && sec <= state.thresholds.upper) {
+      el.style.color = 'red';
+      if (domTimerEl) domTimerEl.style.color = 'red';
+    } else {
+      el.style.color = '';
+      if (domTimerEl) domTimerEl.style.color = '';
+    }
+
+    updateOverlay(sec);
+  };
+
+  const init = () => {
+    injectTimerUI();
+    injectUIIfFactionPage();
+    if (state.enabled) {
+      state.interval = setInterval(runLoop, 1000);
+    }
+  };
+
+  init();
+})();
