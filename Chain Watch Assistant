@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      2.9
+// @version      3.0
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -21,13 +21,7 @@
     enabled: 'chain_watch_enabled',
     apiKey: 'chain_watch_api_key',
     thresholds: 'chain_watch_thresholds',
-    lastNotification: 'chain_watch_last_notification',
-    leaderTabId: 'chain_watch_leader_tab_id',
-    leaderHeartbeat: 'chain_watch_leader_heartbeat',
   };
-
-  // Generate unique tab ID
-  const TAB_ID = Math.random().toString(36).substring(2, 15);
 
   const state = {
     enabled: localStorage.getItem(STORAGE_KEYS.enabled) === 'true',
@@ -37,63 +31,12 @@
     audioAlarm: null,
     interval: null,
     overlayDismissed: false,
-    lastFetchedTime: null,      // When we last fetched from API (timestamp)
-    lastFetchedValue: null,     // The timer value we fetched (in seconds)
-    usingDOMFallback: false,    // Whether we're using DOM as fallback
-    previouslyUsingDOMFallback: false,  // Previous state to detect transitions
-    apiFailureNotified: false,  // Whether we've shown notification for current failure
-    consecutiveAPIFailures: 0,  // Track consecutive API failures
-    lastAPIAttemptTime: 0,      // When we last attempted an API call (timestamp)
-    apiCooldownUntil: 0,        // Timestamp until which API calls are paused after failures
-    isLeader: false,            // Whether this tab is currently the leader
-    lastHeartbeatUpdate: 0,     // When heartbeat was last updated
     lastDisplayedSeconds: null, // Last timer value displayed (for conditional updates)
   };
 
   const TARGET_FALLBACK_FACTIONS = [1111, 2222, 3333];
   const MAX_LEVEL = 100;
   const API_TIMEOUT = 5000;  // 5 second timeout per request
-  const API_PING_INTERVAL = 5000;  // Ping API every 5 seconds (12/min)
-  const MAX_API_FAILURES = 3;  // Switch to DOM after 3 consecutive failures (15 seconds total)
-  const LEADER_STALE_THRESHOLD = 5000;  // Leader is stale if no heartbeat for 5 seconds
-  const HEARTBEAT_UPDATE_INTERVAL = 2000;  // Update heartbeat every 2 seconds
-
-  // Leader tab management
-  const isLeader = () => {
-    const currentLeader = localStorage.getItem(STORAGE_KEYS.leaderTabId);
-    const lastHeartbeat = parseInt(localStorage.getItem(STORAGE_KEYS.leaderHeartbeat) || '0', 10);
-    const now = Date.now();
-
-    // If we're the current leader, return true
-    if (currentLeader === TAB_ID) return true;
-
-    // If there's no leader or the leader is stale, we can claim leadership
-    if (!currentLeader || (now - lastHeartbeat) > LEADER_STALE_THRESHOLD) {
-      claimLeadership();
-      return true;
-    }
-
-    return false;
-  };
-
-  const claimLeadership = () => {
-    localStorage.setItem(STORAGE_KEYS.leaderTabId, TAB_ID);
-    localStorage.setItem(STORAGE_KEYS.leaderHeartbeat, Date.now().toString());
-  };
-
-  const updateLeaderHeartbeat = () => {
-    if (localStorage.getItem(STORAGE_KEYS.leaderTabId) === TAB_ID) {
-      localStorage.setItem(STORAGE_KEYS.leaderHeartbeat, Date.now().toString());
-    }
-  };
-
-  const clearLeadership = () => {
-    if (localStorage.getItem(STORAGE_KEYS.leaderTabId) === TAB_ID) {
-      localStorage.removeItem(STORAGE_KEYS.leaderTabId);
-      localStorage.removeItem(STORAGE_KEYS.leaderHeartbeat);
-    }
-    state.isLeader = false;
-  };
 
   // Audio System (from Chain Warn v2)
   const audioContext = new AudioContext();
@@ -270,21 +213,6 @@
          1px  1px 0 #000;
     }
 
-    .cw-api-warning {
-      display: block;
-      font-size: 11px;
-      font-weight: bold;
-      margin-left: 10px;
-      margin-top: 5px;
-      font-family: 'Orbitron', sans-serif;
-      color: #ff0000;
-      text-shadow:
-        -1px -1px 0 #000,
-         1px -1px 0 #000,
-        -1px  1px 0 #000,
-         1px  1px 0 #000;
-    }
-
     .cw-flash {
       animation: flash 1s infinite;
     }
@@ -340,46 +268,6 @@
     if (!el) return null;
     const [m, s] = el.innerText.split(':').map(Number);
     return isNaN(m) || isNaN(s) ? null : m * 60 + s;
-  };
-
-  const getAPITimer = () => {
-    return new Promise((resolve, reject) => {
-      if (!state.apiKey) return reject('no_key');
-      const url = `https://api.torn.com/v2/faction/chain?key=${state.apiKey}`;
-      let timeout = setTimeout(() => reject('timeout'), API_TIMEOUT);
-      GM_xmlhttpRequest({
-        method: "GET",
-        url,
-        onload: res => {
-          clearTimeout(timeout);
-          try {
-            const json = JSON.parse(res.responseText);
-
-            // Check for API errors
-            if (json.error) {
-              console.error('[Chain Watch] API Error:', json.error);
-              reject('api_error');
-              return;
-            }
-
-            // Check if chain.timeout field exists
-            if (json.chain && json.chain.timeout !== undefined) {
-              resolve(json.chain.timeout);
-            } else {
-              console.warn('[Chain Watch] No chain timeout in response. Faction may not be in an active chain.');
-              reject('no_timeout');
-            }
-          } catch (err) {
-            console.error('[Chain Watch] Parse error:', err);
-            reject('parse_error');
-          }
-        },
-        onerror: (err) => {
-          console.error('[Chain Watch] Request error:', err);
-          reject('request_error');
-        }
-      });
-    });
   };
 
   const openTargetPage = (id) => {
@@ -443,8 +331,6 @@
   };
 
   const showOverlay = (seconds) => {
-    // Only show overlay on leader tab
-    if (!state.isLeader) return;
     if (state.overlay) return;
 
     const overlay = document.createElement('div');
@@ -470,7 +356,7 @@
 
     overlay._escHandler = escHandler;
 
-    // Start audio alarm (leader tab only)
+    // Start audio alarm
     if (!state.audioAlarm) {
       state.audioAlarm = setInterval(playAlert, 1500);
     }
@@ -585,8 +471,6 @@
           state.interval = null;
         }
         hideOverlay();
-        hideAPIWarning();
-        clearLeadership();
       }
       // Note: interval is already running from init, no need to start here
     };
@@ -659,201 +543,26 @@
     h4.parentElement.appendChild(btn);
   };
 
-  const showAPIWarning = (message) => {
-    const timerEl = document.getElementById('cw-duplicate-timer');
-    if (!timerEl) return;
-
-    // Update existing warning if present, or create new one
-    let warningEl = document.getElementById('cw-api-warning');
-    if (warningEl) {
-      warningEl.textContent = message;
-    } else {
-      warningEl = document.createElement('span');
-      warningEl.className = 'cw-api-warning';
-      warningEl.id = 'cw-api-warning';
-      warningEl.textContent = message;
-      // Insert warning after timer in the same h4
-      timerEl.parentElement.appendChild(warningEl);
-    }
-  };
-
-  const hideAPIWarning = () => {
-    const warningEl = document.getElementById('cw-api-warning');
-    if (warningEl) {
-      warningEl.remove();
-    }
-  };
-
-  const showDesktopNotification = () => {
-    if (!('Notification' in window)) return;
-
-    // Check if a notification was recently shown by another tab
-    const lastNotification = parseInt(localStorage.getItem(STORAGE_KEYS.lastNotification) || '0', 10);
-    const now = Date.now();
-    const timeSinceLastNotification = now - lastNotification;
-
-    // If a notification was shown in the last 5 seconds, skip (another tab already notified)
-    if (timeSinceLastNotification < 5000) return;
-
-    // Mark that we're showing a notification now
-    localStorage.setItem(STORAGE_KEYS.lastNotification, now.toString());
-
-    if (Notification.permission === 'granted') {
-      new Notification('Chain Watch - API Failure', {
-        body: 'API connection failed. Keep Torn window active for timer accuracy.',
-        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="75">🔗</text></svg>',
-        requireInteraction: false
-      });
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then(permission => {
-        if (permission === 'granted') {
-          showDesktopNotification();
-        }
-      });
-    }
-  };
-
   const runLoop = () => {
     if (!state.enabled) return;
 
-    const now = Date.now();
-
-    // Cache DOM element references (query once per loop)
+    // Get DOM element references
     const timerEl = document.getElementById('cw-duplicate-timer');
     const domTimerEl = document.querySelector('.bar-timeleft___B9RGV');
 
-    // Check leadership status (with caching to reduce localStorage reads)
-    const previousLeaderStatus = state.isLeader;
-    const isLeaderTab = isLeader();
-    state.isLeader = isLeaderTab;
-
-    // Update heartbeat only every 2 seconds (not every loop)
-    if (isLeaderTab && (now - state.lastHeartbeatUpdate) >= HEARTBEAT_UPDATE_INTERVAL) {
-      updateLeaderHeartbeat();
-      state.lastHeartbeatUpdate = now;
-    }
-
-    // Only update timer visibility when leadership status changes
-    if (isLeaderTab !== previousLeaderStatus) {
-      if (timerEl) {
-        timerEl.style.display = isLeaderTab ? '' : 'none';
-      }
-    }
-
-    // Only leader tab processes timer logic and makes API calls
-    if (!isLeaderTab) return;
-
-    // Ensure timer UI is injected (only if it doesn't exist)
+    // Ensure timer UI is injected
     if (!timerEl) {
       injectTimerUI();
       return; // Wait for next loop to process
     }
 
-    const hasAPIKey = state.apiKey && state.apiKey.trim() !== '';
+    // Read timer value directly from DOM
+    const sec = getDOMTimer();
 
-    // Check if we're in cooldown period (after 3 failures)
-    const inCooldown = now < state.apiCooldownUntil;
-
-    // Determine if it's time to attempt an API call
-    const timeSinceLastAttempt = now - state.lastAPIAttemptTime;
-    const shouldAttemptAPI = hasAPIKey && !inCooldown && timeSinceLastAttempt >= API_PING_INTERVAL;
-
-    // Fire API call in background (non-blocking)
-    if (shouldAttemptAPI) {
-      // Mark that we attempted the API call (prevent duplicate calls)
-      state.lastAPIAttemptTime = now;
-
-      // Fire API call asynchronously without blocking
-      getAPITimer()
-        .then(fetchedValue => {
-          // Success! Update stored values, reset failure counter, clear cooldown
-          state.lastFetchedValue = fetchedValue;
-          state.lastFetchedTime = Date.now();
-          state.consecutiveAPIFailures = 0;
-          state.apiCooldownUntil = 0;
-          state.usingDOMFallback = false;
-        })
-        .catch(error => {
-          // API failed, increment failure counter
-          state.consecutiveAPIFailures++;
-
-          // If we've hit max failures, switch to DOM and set 1-minute cooldown
-          if (state.consecutiveAPIFailures >= MAX_API_FAILURES) {
-            state.usingDOMFallback = true;
-            state.apiCooldownUntil = Date.now() + 60000; // 1 minute from now
-            console.log('[Chain Watch] API failed 3 consecutive times. Switching to DOM fallback for 1 minute.');
-
-            // Fetch from DOM now that we've switched
-            const domValue = getDOMTimer();
-            if (domValue != null) {
-              state.lastFetchedValue = domValue;
-              state.lastFetchedTime = Date.now();
-            }
-          }
-          // If less than 3 failures, keep using timestamp-based calculation from last successful API fetch
-        });
-    }
-
-    // Update from DOM if in fallback mode or no API key
-    if (inCooldown || (hasAPIKey && state.usingDOMFallback)) {
-      // We're in DOM fallback mode (either during cooldown or until API succeeds)
-      // Update from DOM every loop
-      const domValue = getDOMTimer();
-      if (domValue != null) {
-        state.lastFetchedValue = domValue;
-        state.lastFetchedTime = Date.now();
-      }
-    } else if (!hasAPIKey) {
-      // No API key - always use DOM
-      const domValue = getDOMTimer();
-      if (domValue != null) {
-        state.lastFetchedValue = domValue;
-        state.lastFetchedTime = Date.now();
-      }
-      state.usingDOMFallback = true; // Mark as using DOM
-    }
-
-    // Detect API state changes and show/hide warning
-    if (!hasAPIKey) {
-      // No API key provided - show no API key warning
-      showAPIWarning('Warning: API Key not found. Side bar monitoring enabled. Maintain an active Torn Window to ensure Chain Watch functionality.');
-    } else if (state.usingDOMFallback) {
-      // Has API key but it's failing - show API failure warning
-      if (!state.previouslyUsingDOMFallback) {
-        // Just transitioned to failure - show notification
-        if (!state.apiFailureNotified) {
-          showDesktopNotification();
-          state.apiFailureNotified = true;
-        }
-      }
-      showAPIWarning('Warning: API Failed. Maintain an active Torn window to ensure Chain Watch functionality!');
-    } else {
-      // API is working (or we have valid key and it's working) - hide warning
-      hideAPIWarning();
-      state.apiFailureNotified = false;
-    }
-
-    // Update previous state for next iteration
-    state.previouslyUsingDOMFallback = state.usingDOMFallback;
-
-    // Calculate current timer value
-    let sec = null;
-    if (state.lastFetchedValue != null && state.lastFetchedTime != null) {
-      if (state.usingDOMFallback) {
-        // DOM mode: use the value directly (updated every loop from DOM)
-        sec = state.lastFetchedValue;
-      } else {
-        // API mode: calculate based on elapsed time for smooth countdown
-        const elapsedMs = Date.now() - state.lastFetchedTime;
-        const elapsedSec = Math.floor(elapsedMs / 1000);
-        sec = Math.max(0, state.lastFetchedValue - elapsedSec);
-      }
-    }
-
-    // If we don't have any timer value yet, bail
+    // If we can't read from DOM, bail
     if (sec == null) return;
 
-    // Update timer display
+    // Update duplicate timer display
     if (timerEl) timerEl.textContent = '🔗 Chain 🔗 ' + secToMMSS(sec);
 
     // Only update document title when timer value changes
@@ -863,17 +572,19 @@
       state.lastDisplayedSeconds = sec;
     }
 
-    // -- Reset dismissal when timer goes above threshold
+    // Reset dismissal when timer goes above threshold
     if (state.thresholds.lower != null && sec > state.thresholds.lower) {
       state.overlayDismissed = false;
     }
 
+    // Show/hide overlay based on lower threshold
     if (state.thresholds.lower != null && sec <= state.thresholds.lower && !state.overlayDismissed) {
       showOverlay(sec);
     } else {
       hideOverlay();
     }
 
+    // Flash effect for middle threshold
     if (state.thresholds.middle && sec <= state.thresholds.middle) {
       timerEl?.classList.add('cw-flash');
       domTimerEl?.classList.add('cw-flash');
@@ -882,6 +593,7 @@
       domTimerEl?.classList.remove('cw-flash');
     }
 
+    // Red color for upper threshold
     if (state.thresholds.upper && sec <= state.thresholds.upper) {
       if (timerEl) timerEl.style.color = 'red';
       if (domTimerEl) domTimerEl.style.color = 'red';
@@ -890,24 +602,11 @@
       if (domTimerEl) domTimerEl.style.color = '';
     }
 
+    // Update overlay timer if showing
     updateOverlay(sec);
   };
 
   const init = () => {
-    // Claim leadership when tab becomes active
-    window.addEventListener('focus', () => {
-      claimLeadership();
-    });
-
-    window.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        claimLeadership();
-      }
-    });
-
-    // Claim leadership on init if no one else is leader
-    isLeader();
-
     // Inject UI elements
     injectTimerUI();
     injectUIIfFactionPage();
