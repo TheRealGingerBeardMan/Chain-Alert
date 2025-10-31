@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      3.1
+// @version      3.2
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -471,6 +471,9 @@
           state.interval = null;
         }
         hideOverlay();
+      } else {
+        // Re-enabling - reset dismissal flag so overlay can show again
+        state.overlayDismissed = false;
       }
       // Note: interval is already running from init, no need to start here
     };
@@ -509,8 +512,9 @@
       state.thresholds = thresholds;
       localStorage.setItem(STORAGE_KEYS.thresholds, JSON.stringify(thresholds));
 
-      // Automatically enable
+      // Automatically enable and reset dismissal flag
       state.enabled = true;
+      state.overlayDismissed = false;
       localStorage.setItem(STORAGE_KEYS.enabled, 'true');
 
       wrap.remove();
@@ -562,6 +566,11 @@
     // If we can't read from DOM, bail
     if (sec == null) return;
 
+    // Debug logging (only log once per second change to avoid spam)
+    if (sec !== state.lastDisplayedSeconds) {
+      console.log('[Chain Watch] Timer:', sec, 'Thresholds:', state.thresholds, 'Dismissed:', state.overlayDismissed);
+    }
+
     // Update duplicate timer display
     if (timerEl) timerEl.textContent = '🔗 Chain 🔗 ' + secToMMSS(sec);
 
@@ -579,6 +588,7 @@
 
     // Show/hide overlay based on lower threshold
     if (state.thresholds.lower != null && sec <= state.thresholds.lower && !state.overlayDismissed) {
+      console.log('[Chain Watch] Triggering overlay - Timer:', sec, 'Threshold:', state.thresholds.lower);
       showOverlay(sec);
     } else {
       hideOverlay();
