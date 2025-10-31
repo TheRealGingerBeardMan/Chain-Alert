@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      2.8
+// @version      2.9
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -713,7 +713,7 @@
     }
   };
 
-  const runLoop = async () => {
+  const runLoop = () => {
     if (!state.enabled) return;
 
     const now = Date.now();
@@ -758,53 +758,57 @@
     const timeSinceLastAttempt = now - state.lastAPIAttemptTime;
     const shouldAttemptAPI = hasAPIKey && !inCooldown && timeSinceLastAttempt >= API_PING_INTERVAL;
 
-    // Try to fetch fresh data
+    // Fire API call in background (non-blocking)
     if (shouldAttemptAPI) {
-      // Attempt API call
+      // Mark that we attempted the API call (prevent duplicate calls)
       state.lastAPIAttemptTime = now;
 
-      try {
-        const fetchedValue = await getAPITimer();
-        // Success! Update stored values, reset failure counter, clear cooldown
-        state.lastFetchedValue = fetchedValue;
-        state.lastFetchedTime = Date.now();
-        state.consecutiveAPIFailures = 0;
-        state.apiCooldownUntil = 0;
-        state.usingDOMFallback = false;
-      } catch {
-        // API failed, increment failure counter
-        state.consecutiveAPIFailures++;
+      // Fire API call asynchronously without blocking
+      getAPITimer()
+        .then(fetchedValue => {
+          // Success! Update stored values, reset failure counter, clear cooldown
+          state.lastFetchedValue = fetchedValue;
+          state.lastFetchedTime = Date.now();
+          state.consecutiveAPIFailures = 0;
+          state.apiCooldownUntil = 0;
+          state.usingDOMFallback = false;
+        })
+        .catch(error => {
+          // API failed, increment failure counter
+          state.consecutiveAPIFailures++;
 
-        // If we've hit max failures, switch to DOM and set 1-minute cooldown
-        if (state.consecutiveAPIFailures >= MAX_API_FAILURES) {
-          state.usingDOMFallback = true;
-          state.apiCooldownUntil = now + 60000; // 1 minute from now
-          console.log('[Chain Watch] API failed 3 consecutive times. Switching to DOM fallback for 1 minute.');
+          // If we've hit max failures, switch to DOM and set 1-minute cooldown
+          if (state.consecutiveAPIFailures >= MAX_API_FAILURES) {
+            state.usingDOMFallback = true;
+            state.apiCooldownUntil = Date.now() + 60000; // 1 minute from now
+            console.log('[Chain Watch] API failed 3 consecutive times. Switching to DOM fallback for 1 minute.');
 
-          // Fetch from DOM now that we've switched
-          const domValue = getDOMTimer();
-          if (domValue != null) {
-            state.lastFetchedValue = domValue;
-            state.lastFetchedTime = Date.now();
+            // Fetch from DOM now that we've switched
+            const domValue = getDOMTimer();
+            if (domValue != null) {
+              state.lastFetchedValue = domValue;
+              state.lastFetchedTime = Date.now();
+            }
           }
-        }
-        // If less than 3 failures, keep using timestamp-based calculation from last successful API fetch
-        // Don't fetch from DOM yet - just wait for next API attempt
-      }
-    } else if (inCooldown || (hasAPIKey && state.usingDOMFallback)) {
+          // If less than 3 failures, keep using timestamp-based calculation from last successful API fetch
+        });
+    }
+
+    // Update from DOM if in fallback mode or no API key
+    if (inCooldown || (hasAPIKey && state.usingDOMFallback)) {
       // We're in DOM fallback mode (either during cooldown or until API succeeds)
       // Update from DOM every loop
       const domValue = getDOMTimer();
       if (domValue != null) {
         state.lastFetchedValue = domValue;
-        state.lastFetchedTime = Date.now(); // Update timestamp so we know it's fresh
+        state.lastFetchedTime = Date.now();
       }
     } else if (!hasAPIKey) {
       // No API key - always use DOM
       const domValue = getDOMTimer();
       if (domValue != null) {
         state.lastFetchedValue = domValue;
-        state.lastFetchedTime = Date.now(); // Update timestamp so we know it's fresh
+        state.lastFetchedTime = Date.now();
       }
       state.usingDOMFallback = true; // Mark as using DOM
     }
@@ -834,12 +838,12 @@
 
     // Calculate current timer value
     let sec = null;
-    if (state.usingDOMFallback) {
-      // DOM mode: use the value directly (updated every second from DOM)
-      sec = state.lastFetchedValue;
-    } else {
-      // API mode: calculate based on elapsed time for smooth countdown
-      if (state.lastFetchedValue != null && state.lastFetchedTime != null) {
+    if (state.lastFetchedValue != null && state.lastFetchedTime != null) {
+      if (state.usingDOMFallback) {
+        // DOM mode: use the value directly (updated every loop from DOM)
+        sec = state.lastFetchedValue;
+      } else {
+        // API mode: calculate based on elapsed time for smooth countdown
         const elapsedMs = Date.now() - state.lastFetchedTime;
         const elapsedSec = Math.floor(elapsedMs / 1000);
         sec = Math.max(0, state.lastFetchedValue - elapsedSec);
