@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      3.0
+// @version      3.1
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -607,8 +607,32 @@
   };
 
   const init = () => {
-    // Inject UI elements
-    injectTimerUI();
+    // Inject UI elements with retry logic for timer
+    const attemptTimerInjection = () => {
+      if (document.getElementById('cw-duplicate-timer')) {
+        return true; // Already injected
+      }
+      injectTimerUI();
+      return document.getElementById('cw-duplicate-timer') != null;
+    };
+
+    // Try to inject timer immediately
+    attemptTimerInjection();
+
+    // Keep trying to inject timer until it appears (for late-loading pages)
+    let timerRetries = 0;
+    const maxTimerRetries = 40; // 20 seconds total
+    const timerInterval = setInterval(() => {
+      if (attemptTimerInjection()) {
+        clearInterval(timerInterval);
+      }
+      timerRetries++;
+      if (timerRetries >= maxTimerRetries) {
+        clearInterval(timerInterval);
+      }
+    }, 500);
+
+    // Inject faction page button
     injectUIIfFactionPage();
 
     // Keep trying to inject faction button until it appears (for late-loading pages)
@@ -622,8 +646,9 @@
       }
     }, 500);
 
-    // Start the main loop (always run, runLoop checks state.enabled internally)
-    state.interval = setInterval(runLoop, 1000);
+    // Start the main loop at 250ms for smooth updates
+    // This ensures we catch DOM timer changes quickly and stay in sync
+    state.interval = setInterval(runLoop, 250);
   };
 
   init();
