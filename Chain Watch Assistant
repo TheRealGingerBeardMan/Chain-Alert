@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      3.5
+// @version      3.6
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -348,7 +348,7 @@
 
   const openTargetPage = (id) => {
     const url = `https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
-    hideOverlay();
+    hideOverlay(true);  // User taking action - dismiss overlay
     window.open(url, '_blank');
   };
 
@@ -546,8 +546,9 @@
         }
         hideOverlay();
       } else {
-        // Re-enabling - reset dismissal flag so overlay can show again
+        // Re-enabling - reset dismissal flag and inject timer immediately
         state.overlayDismissed = false;
+        injectTimerUI();
       }
       // Note: interval is already running from init, no need to start here
     };
@@ -590,6 +591,9 @@
       state.enabled = true;
       state.overlayDismissed = false;
       localStorage.setItem(STORAGE_KEYS.enabled, 'true');
+
+      // Inject timer immediately without waiting for page refresh
+      injectTimerUI();
 
       wrap.remove();
       // Note: interval is already running from init, will start working on next tick
