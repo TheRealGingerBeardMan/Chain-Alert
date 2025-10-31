@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      3.3
+// @version      3.4
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -29,6 +29,8 @@
     thresholds: JSON.parse(localStorage.getItem(STORAGE_KEYS.thresholds) || '{}'),
     overlay: null,
     audioAlarm: null,
+    audioCheckInterval: null,  // For checking when to escalate audio
+    overlayShownTime: null,    // When overlay was first shown
     interval: null,
     overlayDismissed: false,
     lastDisplayedSeconds: null, // Last timer value displayed (for conditional updates)
@@ -56,6 +58,59 @@
   const playAlert = () => {
     playTone(10, 233, 100);
     playTone(3, 603, 200);
+  };
+
+  const playContinuousTone = () => {
+    // Play a longer, continuous urgent tone
+    playTone(15, 800, 1000);
+  };
+
+  const updateAudioUrgency = () => {
+    if (!state.overlayShownTime) return;
+
+    const elapsedSeconds = Math.floor((Date.now() - state.overlayShownTime) / 1000);
+
+    // Clear existing alarm
+    if (state.audioAlarm) {
+      clearInterval(state.audioAlarm);
+      state.audioAlarm = null;
+    }
+
+    if (elapsedSeconds >= 30) {
+      // After 30 seconds: continuous tone every 1.2 seconds
+      console.log('[Chain Watch] Audio: Continuous tone mode (30+ seconds)');
+      state.audioAlarm = setInterval(playContinuousTone, 1200);
+    } else {
+      // 0-30 seconds: escalating beeps
+      // Start at 1500ms, reduce by 200ms every 5 seconds
+      const reductionSteps = Math.floor(elapsedSeconds / 5);
+      const interval = Math.max(500, 1500 - (reductionSteps * 200));
+      console.log('[Chain Watch] Audio: Escalating mode - interval:', interval, 'ms (elapsed:', elapsedSeconds, 's)');
+      state.audioAlarm = setInterval(playAlert, interval);
+    }
+  };
+
+  const startEscalatingAudio = () => {
+    // Record when overlay was shown
+    state.overlayShownTime = Date.now();
+
+    // Start initial audio
+    updateAudioUrgency();
+
+    // Check every second to update audio urgency
+    state.audioCheckInterval = setInterval(updateAudioUrgency, 1000);
+  };
+
+  const stopAllAudio = () => {
+    if (state.audioAlarm) {
+      clearInterval(state.audioAlarm);
+      state.audioAlarm = null;
+    }
+    if (state.audioCheckInterval) {
+      clearInterval(state.audioCheckInterval);
+      state.audioCheckInterval = null;
+    }
+    state.overlayShownTime = null;
   };
 
   GM_addStyle(`
@@ -356,10 +411,8 @@
 
     overlay._escHandler = escHandler;
 
-    // Start audio alarm
-    if (!state.audioAlarm) {
-      state.audioAlarm = setInterval(playAlert, 1500);
-    }
+    // Start escalating audio alarm system
+    startEscalatingAudio();
   };
 
   const hideOverlay = (userDismissed = false) => {
@@ -369,11 +422,8 @@
       state.overlay = null;
     }
 
-    // Stop audio alarm
-    if (state.audioAlarm) {
-      clearInterval(state.audioAlarm);
-      state.audioAlarm = null;
-    }
+    // Stop all audio (both alarm and check interval)
+    stopAllAudio();
 
     // Only set dismissed flag if user manually dismissed it
     if (userDismissed) {
