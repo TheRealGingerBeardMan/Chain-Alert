@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chain Watch Assistant DevTest
 // @namespace    https://greasyfork.org/users/TheGingerbeardman
-// @version      3.4
+// @version      3.5
 // @description  Monitors chain timer, alerts on user defined thresholds, and finds targets to save the chain.
 // @author       Gingerbeardman
 // @match        https://www.torn.com/*
@@ -31,6 +31,7 @@
     audioAlarm: null,
     audioCheckInterval: null,  // For checking when to escalate audio
     overlayShownTime: null,    // When overlay was first shown
+    currentAudioInterval: null, // Current interval duration for audio
     interval: null,
     overlayDismissed: false,
     lastDisplayedSeconds: null, // Last timer value displayed (for conditional updates)
@@ -69,35 +70,53 @@
     if (!state.overlayShownTime) return;
 
     const elapsedSeconds = Math.floor((Date.now() - state.overlayShownTime) / 1000);
-
-    // Clear existing alarm
-    if (state.audioAlarm) {
-      clearInterval(state.audioAlarm);
-      state.audioAlarm = null;
-    }
+    let newInterval;
 
     if (elapsedSeconds >= 30) {
       // After 30 seconds: continuous tone every 1.2 seconds
-      console.log('[Chain Watch] Audio: Continuous tone mode (30+ seconds)');
-      state.audioAlarm = setInterval(playContinuousTone, 1200);
+      newInterval = 1200;
+
+      // Only update if we haven't switched to continuous mode yet
+      if (state.currentAudioInterval !== 'continuous') {
+        console.log('[Chain Watch] Audio: Switching to continuous tone mode (30+ seconds)');
+        if (state.audioAlarm) {
+          clearInterval(state.audioAlarm);
+        }
+        state.audioAlarm = setInterval(playContinuousTone, newInterval);
+        state.currentAudioInterval = 'continuous';
+      }
     } else {
       // 0-30 seconds: escalating beeps
       // Start at 1500ms, reduce by 200ms every 5 seconds
       const reductionSteps = Math.floor(elapsedSeconds / 5);
-      const interval = Math.max(500, 1500 - (reductionSteps * 200));
-      console.log('[Chain Watch] Audio: Escalating mode - interval:', interval, 'ms (elapsed:', elapsedSeconds, 's)');
-      state.audioAlarm = setInterval(playAlert, interval);
+      newInterval = Math.max(500, 1500 - (reductionSteps * 200));
+
+      // Only update if the interval has changed
+      if (state.currentAudioInterval !== newInterval) {
+        console.log('[Chain Watch] Audio: Updating interval to', newInterval, 'ms (elapsed:', elapsedSeconds, 's)');
+        if (state.audioAlarm) {
+          clearInterval(state.audioAlarm);
+        }
+        state.audioAlarm = setInterval(playAlert, newInterval);
+        state.currentAudioInterval = newInterval;
+      }
     }
   };
 
   const startEscalatingAudio = () => {
     // Record when overlay was shown
     state.overlayShownTime = Date.now();
+    state.currentAudioInterval = null;
 
-    // Start initial audio
-    updateAudioUrgency();
+    // Play immediate first alert
+    console.log('[Chain Watch] Audio: Starting - playing immediate alert');
+    playAlert();
 
-    // Check every second to update audio urgency
+    // Start the repeating audio at initial interval (1500ms)
+    state.audioAlarm = setInterval(playAlert, 1500);
+    state.currentAudioInterval = 1500;
+
+    // Check every second to update audio urgency when needed
     state.audioCheckInterval = setInterval(updateAudioUrgency, 1000);
   };
 
@@ -111,6 +130,8 @@
       state.audioCheckInterval = null;
     }
     state.overlayShownTime = null;
+    state.currentAudioInterval = null;
+    console.log('[Chain Watch] Audio: Stopped');
   };
 
   GM_addStyle(`
